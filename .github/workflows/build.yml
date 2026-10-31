@@ -12,6 +12,7 @@
 #   - Debian 13 (Trixie) 的 libconfig 运行时包名是 libconfig11，
 #     工作流会在 debootstrap 前自动修改 scripts/setup.sh（对应教程 1.1 节）
 #   - 选择 bookworm 时保持 libconfig9 不变
+#   - 内核默认使用 pmOS v26.06 / 6.12.1-r5，可在 Run workflow 时选择分支和版本
 #   - 产物在 files/ 目录：gpt_both0.bin / aboot.mbn / hyp.mbn / rpm.mbn /
 #     sbl1.mbn / tz.mbn / boot.bin / rootfs.bin / SHA256SUMS
 
@@ -44,6 +45,20 @@ on:
         required: false
         default: openstick-debian
         type: string
+      kernel_branch:
+        description: 'pmOS branch for the kernel package'
+        required: true
+        default: v26.06
+        type: choice
+        options:
+          - v26.06
+          - v25.12
+          - v24.06
+      kernel_version:
+        description: 'Kernel package version (v26.06: 6.12.1-r5, v25.12: 6.12.1-r2, v24.06: 6.6-r5)'
+        required: true
+        default: 6.12.1-r5
+        type: string
 
 permissions:
   contents: read
@@ -54,13 +69,16 @@ concurrency:
 
 jobs:
   build:
-    name: Debian ${{ inputs.release }} / ${{ inputs.board }}
+    name: Debian ${{ inputs.release }} / ${{ inputs.board }} / ${{ inputs.kernel_version }}
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     env:
       RELEASE: ${{ inputs.release || 'trixie' }}
       HOST_NAME: ${{ inputs.hostname || 'openstick-debian' }}
       BOARD: ${{ inputs.board || 'yiming-uz801v3' }}
+      KERNEL_BRANCH: ${{ inputs.kernel_branch || 'v26.06' }}
+      KERNEL_VERSION: ${{ inputs.kernel_version || '6.12.1-r5' }}
+      KERNEL_URL: https://mirror.postmarketos.org/postmarketos/${{ inputs.kernel_branch || 'v26.06' }}/aarch64/linux-postmarketos-qcom-msm8916-${{ inputs.kernel_version || '6.12.1-r5' }}.apk
       DEBIAN_FRONTEND: noninteractive
 
     steps:
@@ -77,6 +95,14 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           sudo apt-get clean
           df -h /
+
+      - name: Validate kernel package
+        run: |
+          echo "Kernel: ${KERNEL_BRANCH} / ${KERNEL_VERSION}"
+          echo "URL: ${KERNEL_URL}"
+          # 提前确认包存在，避免构建半小时后才发现 404
+          curl -fsL --retry 3 --retry-delay 5 --max-time 60 \
+            -r 0-0 -o /dev/null -w 'HTTP %{http_code}\n' "${KERNEL_URL}"
 
       - name: Install build dependencies
         run: |
@@ -130,7 +156,7 @@ jobs:
             done
           }
           for i in 1 2 3; do
-            if sudo env RELEASE="$RELEASE" HOST_NAME="$HOST_NAME" sh -e scripts/debootstrap.sh; then
+            if sudo env RELEASE="$RELEASE" HOST_NAME="$HOST_NAME" KERNEL_URL="$KERNEL_URL" sh -e scripts/debootstrap.sh; then
               exit 0
             fi
             echo "::warning::debootstrap failed (attempt $i/3), cleaning up and retrying"
@@ -148,6 +174,9 @@ jobs:
       - name: Verify outputs and generate checksums
         run: |
           set -e
+          # files/ 由 sudo 构建脚本创建，属主是 root；改回 runner 用户，
+          # 否则下面的 `> SHA256SUMS` 会报 Permission denied
+          sudo chown -R "$(id -u):$(id -g)" files
           for f in gpt_both0.bin aboot.mbn hyp.mbn rpm.mbn sbl1.mbn tz.mbn boot.bin rootfs.bin; do
             test -s "files/$f" || { echo "::error::missing build output: files/$f"; exit 1; }
           done
@@ -157,6 +186,7 @@ jobs:
             echo ""
             echo "- Debian release: $RELEASE"
             echo "- Board devicetree: $BOARD"
+            echo "- Kernel: $KERNEL_BRANCH / $KERNEL_VERSION"
             echo "- Hostname: $HOST_NAME"
             echo ""
             echo "| File | Size |"
@@ -171,7 +201,7 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: openstick-debian-${{ env.RELEASE }}-${{ env.BOARD }}
+          name: openstick-debian-${{ env.RELEASE }}-${{ env.BOARD }}-${{ env.KERNEL_VERSION }}
           path: files/*
           if-no-files-found: error
           retention-days: 30

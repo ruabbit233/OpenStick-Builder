@@ -55,8 +55,23 @@ SUBSYSTEM=="net", ACTION=="add|change|move", ENV{DEVTYPE}=="gadget", ENV{NM_UNMA
 EOF
 
 # install kernel
-wget -O - http://mirror.postmarketos.org/postmarketos/v24.06/aarch64/linux-postmarketos-qcom-msm8916-6.6-r5.apk \
-    | tar xkzf - -C ${CHROOT} --exclude=.PKGINFO --exclude=.SIGN* 2>/dev/null
+#
+# The kernel comes from postmarketOS. Default: v26.06 (6.12.1-r5).
+# Override KERNEL_BRANCH / KERNEL_VERSION (or the full KERNEL_URL) to use
+# another package, e.g. KERNEL_BRANCH=v24.06 KERNEL_VERSION=6.6-r5.
+KERNEL_BRANCH=${KERNEL_BRANCH:-v26.06}
+KERNEL_VERSION=${KERNEL_VERSION:-6.12.1-r5}
+KERNEL_PKG=${KERNEL_PKG:-linux-postmarketos-qcom-msm8916}
+KERNEL_URL=${KERNEL_URL:-}
+if [ -z "${KERNEL_URL}" ]; then
+    KERNEL_URL="https://mirror.postmarketos.org/postmarketos/${KERNEL_BRANCH}/aarch64/${KERNEL_PKG}-${KERNEL_VERSION}.apk"
+fi
+
+KERNEL_APK=$(mktemp /tmp/openstick-kernel-XXXXXX)
+echo "Installing kernel: ${KERNEL_URL}"
+wget --timeout=60 --tries=3 -O "${KERNEL_APK}" "${KERNEL_URL}"
+tar xkzf "${KERNEL_APK}" -C ${CHROOT} --exclude=.PKGINFO --exclude=.SIGN*
+rm -f "${KERNEL_APK}"
 
 mkdir -p ${CHROOT}/boot/extlinux
 cp configs/extlinux.conf ${CHROOT}/boot/extlinux

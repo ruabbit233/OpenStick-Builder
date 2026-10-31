@@ -1,37 +1,178 @@
-name: Build
+# 云编译 OpenStick (MSM8916 随身 WiFi) 的 Debian 镜像
+#
+# 用法：
+#   1. Fork 本仓库（或直接使用本仓库），进入 Actions 页面
+#   2. 选择 "Build OpenStick Debian Image" -> Run workflow
+#   3. 选择 Debian 版本、板型，运行结束后在本次运行的 Artifacts 中下载
+#
+# 构建流程与这篇教程一致：
+#   https://fire0594.com/tech/debian-13-trixie-on-msm8916-wifi-dongle-by-openstick-builder/
+#
+# 注意：
+#   - Debian 13 (Trixie) 的 libconfig 运行时包名是 libconfig11，
+#     工作流会在 debootstrap 前自动修改 scripts/setup.sh（对应教程 1.1 节）
+#   - 选择 bookworm 时保持 libconfig9 不变
+#   - 产物在 files/ 目录：gpt_both0.bin / aboot.mbn / hyp.mbn / rpm.mbn /
+#     sbl1.mbn / tz.mbn / boot.bin / rootfs.bin / SHA256SUMS
+
+name: Build OpenStick Debian Image
 
 on:
   workflow_dispatch:
+    inputs:
+      release:
+        description: 'Debian release (trixie = Debian 13)'
+        required: true
+        default: trixie
+        type: choice
+        options:
+          - trixie
+          - bookworm
+      board:
+        description: 'Board / devicetree written to extlinux.conf'
+        required: true
+        default: yiming-uz801v3
+        type: choice
+        options:
+          - yiming-uz801v3
+          - thwc-uf896
+          - thwc-ufi001c
+          - jz01-45-v33
+          - fy-mf800
+      hostname:
+        description: 'Hostname of the generated image'
+        required: false
+        default: openstick-debian
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    name: Debian ${{ inputs.release }} / ${{ inputs.board }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      RELEASE: ${{ inputs.release || 'trixie' }}
+      HOST_NAME: ${{ inputs.hostname || 'openstick-debian' }}
+      BOARD: ${{ inputs.board || 'yiming-uz801v3' }}
+      DEBIAN_FRONTEND: noninteractive
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout source (with submodules)
+        uses: actions/checkout@v4
         with:
-          submodules: true
+          submodules: recursive
+          fetch-depth: 1
 
-      - name: Install dependencies
-        run: sudo sh -e scripts/install_deps.sh
+      - name: Free up disk space
+        run: |
+          # runner 开机时可能正在跑 unattended-upgrades，会占住 apt 锁
+          sudo systemctl stop unattended-upgrades.service 2>/dev/null || true
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo apt-get clean
+          df -h /
 
-      - name: Build hyp and aboot firmware
+      - name: Install build dependencies
+        run: |
+          retry() {
+            local attempts=$1; shift
+            for i in $(seq 1 "$attempts"); do
+              "$@" && return 0
+              echo "::warning::'$*' failed (attempt $i/$attempts), retrying in 15s"
+              sleep 15
+            done
+            return 1
+          }
+          retry 3 sudo sh -e scripts/install_deps.sh
+
+      - name: Apply Debian 13 fix (libconfig11)
+        if: inputs.release == 'trixie'
+        run: |
+          # 教程 1.1 节：Debian 13 的 libconfig 包由 libconfig9 变为 libconfig11
+          sed -i 's/libconfig9/libconfig11/g' scripts/setup.sh
+          grep -n 'libconfig' scripts/setup.sh
+
+      - name: Select board devicetree
+        if: inputs.board != 'yiming-uz801v3'
+        run: |
+          # 教程 4.2 节：默认板型是 UZ801，其它板型需要替换 extlinux.conf 中的 dtb 名称。
+          # 在 debootstrap 之前改，生成的 boot 分区里就是正确的 dtb。
+          sed -i "s/yiming-uz801v3/$BOARD/g" configs/extlinux.conf
+          cat configs/extlinux.conf
+
+      - name: Build hyp and lk2nd (aboot)
         run: sudo sh -e scripts/build_hyp_aboot.sh
 
-      - name: Extract MSM8916 firmware
-        run: sudo sh -e scripts/extract_fw.sh
+      - name: Extract Qualcomm firmware and create GPT
+        run: |
+          retry() {
+            local attempts=$1; shift
+            for i in $(seq 1 "$attempts"); do
+              "$@" && return 0
+              echo "::warning::'$*' failed (attempt $i/$attempts), retrying in 15s"
+              sleep 15
+            done
+            return 1
+          }
+          retry 3 sudo sh -e scripts/extract_fw.sh
 
-      - name: Create rootfs
-        run: sudo sh -e scripts/debootstrap.sh
+      - name: Create rootfs (debootstrap ${{ env.RELEASE }})
+        run: |
+          unmount_chroot() {
+            for m in rootfs/proc rootfs/sys rootfs/dev/pts rootfs/dev rootfs/run; do
+              sudo umount "$m" 2>/dev/null || true
+            done
+          }
+          for i in 1 2 3; do
+            if sudo env RELEASE="$RELEASE" HOST_NAME="$HOST_NAME" sh -e scripts/debootstrap.sh; then
+              exit 0
+            fi
+            echo "::warning::debootstrap failed (attempt $i/3), cleaning up and retrying"
+            unmount_chroot
+            sleep 15
+          done
+          exit 1
 
-      - name: Build gadget-tool
+      - name: Build gadget-tools (gt)
         run: sudo sh -e scripts/build_gt.sh
 
-      - name: Create images
+      - name: Create boot and rootfs images
         run: sudo sh -e scripts/build_images.sh
+
+      - name: Verify outputs and generate checksums
+        run: |
+          set -e
+          for f in gpt_both0.bin aboot.mbn hyp.mbn rpm.mbn sbl1.mbn tz.mbn boot.bin rootfs.bin; do
+            test -s "files/$f" || { echo "::error::missing build output: files/$f"; exit 1; }
+          done
+          ( cd files && sha256sum gpt_both0.bin aboot.mbn hyp.mbn rpm.mbn sbl1.mbn tz.mbn boot.bin rootfs.bin > SHA256SUMS )
+          {
+            echo "## OpenStick Debian image"
+            echo ""
+            echo "- Debian release: $RELEASE"
+            echo "- Board devicetree: $BOARD"
+            echo "- Hostname: $HOST_NAME"
+            echo ""
+            echo "| File | Size |"
+            echo "| --- | --- |"
+            for f in files/*; do
+              [ -f "$f" ] || continue
+              printf '| %s | %s |\n' "$(basename "$f")" "$(du -h --apparent-size "$f" | cut -f1)"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+          cat files/SHA256SUMS
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: openstick-debian
+          name: openstick-debian-${{ env.RELEASE }}-${{ env.BOARD }}
           path: files/*
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6

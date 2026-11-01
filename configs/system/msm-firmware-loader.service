@@ -1,11 +1,14 @@
 [Unit]
 DefaultDependencies=no
 Before=qrtr-ns.service
+# RequiresMountsFor is a [Unit] key; systemd ignores it under [Service]
+# ("Unknown key ... in section [Service]"). Keep the firmware dir and the
+# loader script available before this oneshot runs.
+RequiresMountsFor=/lib/firmware /usr/sbin
 
 [Service]
 Type=oneshot
 ExecStart=/usr/sbin/msm-firmware-loader.sh
-RequiresMountsFor=/lib/firmware /usr/sbin
 
 [Install]
 WantedBy=multi-user.target

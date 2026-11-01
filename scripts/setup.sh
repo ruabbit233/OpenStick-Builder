@@ -19,11 +19,15 @@ rm -f "/etc/locale.gen"
 apt update -qqy
 apt upgrade -qqy
 apt autoremove -qqy
+# libc6-dev/libconfig-dev are build-time dependencies of scripts/build_gt.sh:
+# it compiles against this chroot as --sysroot, so the C headers have to live
+# inside it (libtool adds --sysroot to every compile command).
 apt install -qqy --no-install-recommends \
     bridge-utils \
     dnsmasq \
     hostapd \
     iptables \
+    libc6-dev \
     libconfig9 \
     libconfig-dev \
     locales \

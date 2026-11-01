@@ -10,11 +10,12 @@ else
     QEMU=qemu-aarch64-static
 fi
 
-# install gt dependencies (already present when scripts/setup.sh installed
-# them, which avoids an emulated apt run on x86_64 hosts)
-if ! chroot ${CHROOT} ${QEMU} /bin/sh -c 'dpkg -s libconfig-dev >/dev/null 2>&1'; then
+# The chroot doubles as --sysroot for the libusbgx/gt builds, so it needs both
+# the C library headers and libconfig. scripts/setup.sh normally provides them;
+# install them here only when an older/cached rootfs is missing them.
+if ! chroot ${CHROOT} ${QEMU} /bin/sh -c 'dpkg -s libc6-dev libconfig-dev >/dev/null 2>&1'; then
     chroot ${CHROOT} ${QEMU} /bin/sh \
-        -c " apt update; apt install libconfig-dev -y"
+        -c " apt update; apt install libc6-dev libconfig-dev -y"
 fi
 
 # build and install gt
@@ -40,8 +41,7 @@ PKG_CONFIG_PATH=${CHROOT}/usr/lib/pkgconfig:${CHROOT}/usr/lib/aarch64-linux-gnu/
     cmake -DCMAKE_INSTALL_PREFIX=/usr \
         -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++ \
         -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc \
-        -DCMAKE_C_FLAGS=-I$(pwd)/dist/usr/include \
-        -DCMAKE_C_FLAGS=-L$(pwd)/dist/usr/lib \
+        -DCMAKE_C_FLAGS="-I$(pwd)/dist/usr/include -L$(pwd)/dist/usr/lib" \
         -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER \
         -DCMAKE_SYSROOT=${CHROOT} \
         -DCMAKE_SYSTEM_PROCESSOR=aarch64 \

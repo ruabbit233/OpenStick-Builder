@@ -5,7 +5,6 @@ apt install -y \
     android-sdk-libsparse-utils \
     autoconf \
     automake \
-    binfmt-support \
     cmake \
     debian-archive-keyring \
     debootstrap \
@@ -20,6 +19,11 @@ apt install -y \
     python3-cryptography \
     python3-pyasn1-modules \
     python3-pycryptodome \
-    qemu-user-static \
     unzip \
-    wget 
+    wget
+
+# QEMU/binfmt are only needed when the target arch differs from the host;
+# native arm64 hosts (e.g. ubuntu-24.04-arm runners) run the chroot directly.
+if [ "$(dpkg --print-architecture)" != "arm64" ]; then
+    apt install -y binfmt-support qemu-user-static
+fi

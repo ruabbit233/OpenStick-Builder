@@ -4,14 +4,32 @@ CHROOT=${CHROOT=$(pwd)/rootfs}
 RELEASE=${RELEASE=stable}
 HOST_NAME=${HOST_NAME=openstick-debian}
 
+# Emulation is the dominant cost of this script: on x86_64 every maintainer
+# script of the arm64 base system has to run through qemu-user, which is about
+# an order of magnitude slower than native. GitHub's ubuntu-24.04-arm runners
+# are native aarch64, so they can skip --foreign/--second-stage completely.
+if [ "$(dpkg --print-architecture)" = "arm64" ]; then
+    QEMU=
+else
+    QEMU=qemu-aarch64-static
+fi
+
 rm -rf ${CHROOT}
 
-debootstrap --foreign --arch arm64 \
-    --keyring /usr/share/keyrings/debian-archive-keyring.gpg ${RELEASE} ${CHROOT}
+t0=$(date +%s)
 
-cp $(which qemu-aarch64-static) ${CHROOT}/usr/bin
+if [ -n "${QEMU}" ]; then
+    debootstrap --foreign --arch arm64 \
+        --keyring /usr/share/keyrings/debian-archive-keyring.gpg ${RELEASE} ${CHROOT}
 
-chroot ${CHROOT} qemu-aarch64-static /bin/bash /debootstrap/debootstrap --second-stage
+    cp "$(which qemu-aarch64-static)" ${CHROOT}/usr/bin
+    chroot ${CHROOT} ${QEMU} /bin/bash /debootstrap/debootstrap --second-stage
+else
+    debootstrap --arch arm64 \
+        --keyring /usr/share/keyrings/debian-archive-keyring.gpg ${RELEASE} ${CHROOT}
+fi
+
+echo "[timing] base system (${RELEASE}, host $(dpkg --print-architecture)): $(( $(date +%s) - t0 ))s"
 
 cat << EOF > ${CHROOT}/etc/apt/sources.list
 deb http://deb.debian.org/debian ${RELEASE} main contrib non-free-firmware
@@ -26,7 +44,9 @@ mount -o bind /dev/pts/ ${CHROOT}/dev/pts/
 mount -o bind /run ${CHROOT}/run/
 
 cp scripts/setup.sh ${CHROOT}
-chroot ${CHROOT} qemu-aarch64-static /bin/sh -c /setup.sh
+t1=$(date +%s)
+chroot ${CHROOT} ${QEMU} /bin/sh -c /setup.sh
+echo "[timing] package install: $(( $(date +%s) - t1 ))s"
 
 # cleanup
 for a in proc sys dev/pts dev run; do
@@ -86,4 +106,6 @@ mkdir -p ${CHROOT}/lib/firmware/msm-firmware-loader
 echo "PARTUUID=80780b1d-0fe1-27d3-23e4-9244e62f8c46\t/boot\text2\tdefaults\t0 2" > ${CHROOT}/etc/fstab
 
 # backup rootfs
+t2=$(date +%s)
 tar cpzf rootfs.tgz --exclude="usr/bin/qemu-aarch64-static" -C rootfs .
+echo "[timing] rootfs archive: $(( $(date +%s) - t2 ))s"

@@ -3,9 +3,19 @@
 CHROOT=${CHROOT=$(pwd)/rootfs}
 SRCDIR=$(pwd)/src
 
-# install gt dependencies
-chroot ${CHROOT} qemu-aarch64-static /bin/sh \
-    -c " apt update; apt install libconfig-dev -y"
+# Native arm64 hosts do not need qemu in front of the chroot.
+if [ "$(dpkg --print-architecture)" = "arm64" ]; then
+    QEMU=
+else
+    QEMU=qemu-aarch64-static
+fi
+
+# install gt dependencies (already present when scripts/setup.sh installed
+# them, which avoids an emulated apt run on x86_64 hosts)
+if ! chroot ${CHROOT} ${QEMU} /bin/sh -c 'dpkg -s libconfig-dev >/dev/null 2>&1'; then
+    chroot ${CHROOT} ${QEMU} /bin/sh \
+        -c " apt update; apt install libconfig-dev -y"
+fi
 
 # build and install gt
 (

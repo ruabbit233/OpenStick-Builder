@@ -13,6 +13,9 @@
 #     工作流会在 debootstrap 前自动修改 scripts/setup.sh（对应教程 1.1 节）
 #   - 选择 bookworm 时保持 libconfig9 不变
 #   - 内核默认使用 pmOS v26.06 / 6.12.1-r5，可在 Run workflow 时选择分支和版本
+#   - 默认使用 ubuntu-24.04-arm 原生 arm64 runner（debootstrap 无需 QEMU 模拟，
+#     整个流程约 10 分钟）；公共仓库免费。私有仓库或需要 x86_64 时可选择
+#     ubuntu-24.04，此时走 QEMU 模拟，rootfs 会自动缓存以便下次复用
 #   - 产物在 files/ 目录：gpt_both0.bin / aboot.mbn / hyp.mbn / rpm.mbn /
 #     sbl1.mbn / tz.mbn / boot.bin / rootfs.bin / SHA256SUMS
 
@@ -59,6 +62,14 @@ on:
         required: true
         default: 6.12.1-r5
         type: string
+      runner:
+        description: 'Runner label (arm64 = native build, ~10x faster; ubuntu-24.04 = QEMU emulation)'
+        required: true
+        default: ubuntu-24.04-arm
+        type: choice
+        options:
+          - ubuntu-24.04-arm
+          - ubuntu-24.04
 
 permissions:
   contents: read
@@ -70,7 +81,10 @@ concurrency:
 jobs:
   build:
     name: Debian ${{ inputs.release }} / ${{ inputs.board }} / ${{ inputs.kernel_version }}
-    runs-on: ubuntu-24.04
+    # Native aarch64 runner: debootstrap and every maintainer script run at full
+    # speed instead of through qemu-user. Public repositories get these runners
+    # for free; private forks can fall back to ubuntu-24.04 (emulated, slower).
+    runs-on: ${{ inputs.runner || 'ubuntu-24.04-arm' }}
     timeout-minutes: 180
     env:
       RELEASE: ${{ inputs.release || 'trixie' }}
@@ -148,7 +162,25 @@ jobs:
           }
           retry 3 sudo sh -e scripts/extract_fw.sh
 
+      - name: Compute rootfs cache key
+        id: rootfs-key
+        run: |
+          # Everything that ends up inside rootfs.tgz must be part of the key.
+          # Computed once so that restore and save always agree.
+          key="rootfs-${RELEASE}-${BOARD}-${HOST_NAME}-${KERNEL_VERSION}-${{ hashFiles('scripts/setup.sh', 'scripts/debootstrap.sh', 'configs/**', 'dtbs/**') }}"
+          echo "key=${key}" >> "$GITHUB_OUTPUT"
+          echo "rootfs cache key: ${key}"
+
+      - name: Restore cached rootfs (QEMU runners only)
+        id: rootfs-cache
+        if: inputs.runner == 'ubuntu-24.04'
+        uses: actions/cache/restore@v4
+        with:
+          path: rootfs.tgz
+          key: ${{ steps.rootfs-key.outputs.key }}
+
       - name: Create rootfs (debootstrap ${{ env.RELEASE }})
+        if: steps.rootfs-cache.outputs.cache-hit != 'true'
         run: |
           unmount_chroot() {
             for m in rootfs/proc rootfs/sys rootfs/dev/pts rootfs/dev rootfs/run; do
@@ -164,6 +196,23 @@ jobs:
             sleep 15
           done
           exit 1
+
+      - name: Unpack cached rootfs
+        if: steps.rootfs-cache.outputs.cache-hit == 'true'
+        run: |
+          # build_gt.sh needs the chroot as a sysroot, so restore it as well.
+          sudo mkdir -p rootfs
+          sudo tar xpf rootfs.tgz -C rootfs
+          sudo mount -t proc proc rootfs/proc
+          sudo mount -o bind /dev rootfs/dev
+
+      - name: Save rootfs to cache (QEMU runners only)
+        if: inputs.runner == 'ubuntu-24.04' && steps.rootfs-cache.outputs.cache-hit != 'true'
+        continue-on-error: true      # a concurrent run may have stored the same key
+        uses: actions/cache/save@v4
+        with:
+          key: ${{ steps.rootfs-key.outputs.key }}
+          path: rootfs.tgz
 
       - name: Build gadget-tools (gt)
         run: sudo sh -e scripts/build_gt.sh
@@ -188,6 +237,8 @@ jobs:
             echo "- Board devicetree: $BOARD"
             echo "- Kernel: $KERNEL_BRANCH / $KERNEL_VERSION"
             echo "- Hostname: $HOST_NAME"
+            echo "- Runner: ${RUNNER_ARCH}"
+            echo "- rootfs: ${{ steps.rootfs-cache.outputs.cache-hit == 'true' && 'restored from cache' || 'built with debootstrap' }}"
             echo ""
             echo "| File | Size |"
             echo "| --- | --- |"

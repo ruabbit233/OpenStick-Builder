@@ -59,6 +59,14 @@ The generated firmware files will be stored under the `files` directory
    - click and run ***Run workflow***
    - once the workflow is done, click on the workflow summary and then download the resulting artifact
 
+> [!TIP]
+> The workflow defaults to the native `ubuntu-24.04-arm` runner, so `debootstrap`
+> runs without QEMU emulation and the whole build takes roughly 10 minutes instead
+> of an hour. It is free for public repositories; private repositories are billed
+> per minute (still cheap at ~10 minutes). Selecting `ubuntu-24.04` falls back to
+> the old x86_64 + qemu-user path; that path caches `rootfs.tgz`, so only the first
+> run pays the full price.
+
 ## Customizations
 Edit [`scripts/setup.sh`](scripts/setup.sh) to add/remove packages. Note that this script is running inside the `chroot` environment.
 

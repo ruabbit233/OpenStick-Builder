@@ -167,7 +167,18 @@ jobs:
         run: |
           # Everything that ends up inside rootfs.tgz must be part of the key.
           # Computed once so that restore and save always agree.
-          key="rootfs-${RELEASE}-${BOARD}-${HOST_NAME}-${KERNEL_VERSION}-${{ hashFiles('scripts/setup.sh', 'scripts/debootstrap.sh', 'configs/**', 'dtbs/**') }}"
+          #
+          # Deliberately not using hashFiles(): it currently fails on hosted
+          # runners with "Fail to hash files under directory ..." even for
+          # trivial patterns (actions/runner#449, runner-images#13341).
+          files_hash=$(
+            find scripts/setup.sh scripts/debootstrap.sh configs dtbs -type f -print0 \
+              | sort -z \
+              | xargs -0 sha256sum \
+              | sha256sum \
+              | cut -d' ' -f1
+          )
+          key="rootfs-${RELEASE}-${BOARD}-${HOST_NAME}-${KERNEL_VERSION}-${files_hash}"
           echo "key=${key}" >> "$GITHUB_OUTPUT"
           echo "rootfs cache key: ${key}"
 

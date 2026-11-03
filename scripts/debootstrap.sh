@@ -62,12 +62,31 @@ sed -i "/localhost/ s/$/ ${HOST_NAME}/" ${CHROOT}/etc/hosts
 # setup systemd services
 cp -a configs/system/* ${CHROOT}/etc/systemd/system
 
+# schedutil rate-limit workaround: cpufreq-dt reports an unknown transition
+# latency on this DTB, which makes schedutil throttle frequency changes for
+# several seconds. The unit writes the normal 10 ms value at boot.
+ln -sf /etc/systemd/system/cpufreq-schedutil-tune.service \
+    ${CHROOT}/etc/systemd/system/multi-user.target.wants/cpufreq-schedutil-tune.service
+
 cp -a scripts/msm-firmware-loader.sh ${CHROOT}/usr/sbin
 
 # setup NetworkManager
 cp configs/*.nmconnection ${CHROOT}/etc/NetworkManager/system-connections
 chmod 0600 ${CHROOT}/etc/NetworkManager/system-connections/*
 sed -i '/\[main\]/a dns=dnsmasq' ${CHROOT}/etc/NetworkManager/NetworkManager.conf
+
+# Disable WiFi power save.
+#
+# The kernel is built with CONFIG_CFG80211_DEFAULT_PS=y and NetworkManager
+# defaults to wifi.powersave=3 as well, so the wcn36xx station sleeps between
+# beacons. On this driver that produces 100-300 ms ping spikes and keeps the
+# TX rate at MCS4-ish: every downlink frame waits for the next DTIM (100 ms
+# here). This file is parsed after the distro default and turns PS off.
+mkdir -p ${CHROOT}/etc/NetworkManager/conf.d
+cat << EOF > ${CHROOT}/etc/NetworkManager/conf.d/99-wifi-powersave-off.conf
+[connection]
+wifi.powersave = 2
+EOF
 
 # enable autoconnect for usb0
 cat << EOF > ${CHROOT}/etc/udev/rules.d/99-nm-usb0.rules

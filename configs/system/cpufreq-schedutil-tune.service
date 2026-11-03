@@ -1,0 +1,13 @@
+[Unit]
+Description=Restore a sane schedutil rate limit (DT reports unknown transition latency)
+After=multi-user.target
+
+[Service]
+Type=oneshot
+# cpufreq-dt reports cpuinfo_transition_latency = 0xffffffff on this DTB, so
+# schedutil computes a ~6.4 s rate limit and frequency changes become very
+# sluggish. 10 ms is the kernel's normal default.
+ExecStart=/bin/sh -c 'echo 10000 > /sys/devices/system/cpu/cpufreq/schedutil/rate_limit_us'
+
+[Install]
+WantedBy=multi-user.target

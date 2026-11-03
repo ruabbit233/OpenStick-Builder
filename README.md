@@ -166,6 +166,19 @@ Edit [`scripts/setup.sh`](scripts/setup.sh) to add/remove packages. Note that th
      - `jz01-45-v33` for **JZxxx** boards
      - `fy-mf800` for **MF800** boards
 
+- WiFi performance / Bluetooth
+
+  The WCN3620 shares its antenna between WiFi and Bluetooth. Bluetooth being
+  powered but idle is harmless (~3 ms ping), but a **continuous BLE scan**
+  (`bluetoothctl scan on`, `BleakScanner`, etc.) makes the firmware time-share
+  the radio: WiFi latency jumps to 60-250 ms with packet loss and throughput
+  drops. If you need scanning, scan in bursts instead of continuously, e.g.
+  1 s on / 8 s off, and keep the "device absent" timeout larger than the
+  off period. To disable Bluetooth entirely:
+  ```shell
+  sudo systemctl mask --now bluetooth
+  ```
+
 - To maximize the `rootfs` partition
   ```shell
   resize2fs /dev/disk/by-partlabel/rootfs
@@ -174,7 +187,7 @@ Edit [`scripts/setup.sh`](scripts/setup.sh) to add/remove packages. Note that th
 - To update the kernel of the `debian` image
   ```shell
   wget -O - http://mirror.postmarketos.org/postmarketos/<branch>/aarch64/linux-postmarketos-qcom-msm8916-<version>.apk \
-          | tar xkzf - -C / --exclude=.PKGINFO --exclude=.SIGN* 2>/dev/null
+          | tar xzf - -C / --exclude=.PKGINFO --exclude=.SIGN*
   ```
 
   Specify the correct `<branch>` and `<version>` values.
